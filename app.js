@@ -9,8 +9,8 @@ const app = express ();
 //Middlewares
 
 app.use(cors({
-    origin: 'http://localhost:5173', // <-- la URL de tu frontend
-    credentials: true, // <-- esto permite enviar cookies de sesión
+    origin: 'http://localhost:5173', 
+    credentials: true, 
   }));
   
 app.use(bodyParser.urlencoded({extended:true}));
@@ -34,6 +34,20 @@ const dbConfig ={
     password:'',
     database:"boardai"
 }
+
+const db = mysql.createPool(dbConfig); 
+
+const multer = require("multer");
+
+const storage = multer.diskStorage({
+  destination: "uploads/",
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + "-" + file.originalname);
+  }
+});
+
+const upload = multer({ storage });
+
 
 //Ruta de prueba 
 app.get('/',async(req,res)=>{
@@ -192,361 +206,464 @@ app.get("/profile", async (req, res) => {
     }
 });
 
-// Ruta para actualizar perfil
-app.put("/update-profile", async (req, res) => {
-    if (!req.session.userId) {
-        return res.status(401).json({
-            success: false,
-            message: "No autorizado"
-        });
-    }
 
-    const { nombre, email, foto_perfil, contrasena } = req.body;
 
-    try {
-        const connection = await mysql.createConnection(dbConfig);
 
-        if (contrasena && contrasena.trim() !== "") {
-            // Actualizar también la contraseña
-            await connection.execute(
-                "UPDATE usuarios SET nombre = ?, email = ?, foto_perfil = ?, contrasena = ? WHERE id_usuario = ?",
-                [nombre, email, foto_perfil, contrasena, req.session.userId]
-            );
-        } else {
-            // Solo actualizar nombre, email y foto
-            await connection.execute(
-                "UPDATE usuarios SET nombre = ?, email = ?, foto_perfil = ? WHERE id_usuario = ?",
-                [nombre, email, foto_perfil, req.session.userId]
-            );
-        }
+////////////////////////////////////////
+//Rutas Para Editar usuarios como profe y estudiante
+////////////////////////////////////////
 
-        await connection.end();
 
-        res.json({
-            success: true,
-            message: "Perfil actualizado"
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({
-            success: false,
-            message: "Error al actualizar perfil"
-        });
-    }
-});
+//Se usa para e tema de las imagnes desde el file , para que se guarden y no se rompan 
+app.use("/uploads", express.static("uploads"));
 
-// Crear nueva clase
-app.post("/clases", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "profesor") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
 
-  const { nombre, descripcion } = req.body;
-  if (!nombre || !descripcion) {
-    return res.json({ success: false, message: "Todos los campos son obligatorios" });
+//Obtenemos informacion del estudiante
+app.get("/userinfo", async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ error: "No autenticado" });
   }
 
   try {
     const connection = await mysql.createConnection(dbConfig);
+
+    const [rows] = await connection.execute(
+      "SELECT id_usuario, nombre, email, rol, foto_perfil FROM usuarios WHERE id_usuario = ?",
+      [req.session.userId]
+    );
+
+    await connection.end();
+
+    if (rows.length === 0) {
+      return res.json({ error: "Usuario no encontrado" });
+    }
+
+    res.json({ success: true, usuario: rows[0] });
+
+  } catch (error) {
+    res.json({ error });
+  }
+});
+
+// Ruta para subir foto de perfil
+app.post("/upload-profile-pic", upload.single("foto"), async (req, res) => {
+  if (!req.session.userId) {
+      return res.status(401).json({ success: false, message: "No autorizado" });
+  }
+
+  if (!req.file) {
+      return res.json({ success: false, message: "No se recibió ninguna imagen" });
+  }
+
+  const nuevaFoto = "/uploads/" + req.file.filename;
+
+  try {
+      const connection = await mysql.createConnection(dbConfig);
+
+      await connection.execute(
+          "UPDATE usuarios SET foto_perfil = ? WHERE id_usuario = ?",
+          [nuevaFoto, req.session.userId]
+      );
+
+      await connection.end();
+
+      res.json({
+          success: true,
+          foto: nuevaFoto
+      });
+
+  } catch (error) {
+      console.error(error);
+      res.json({ success: false, message: "Error al subir imagen" });
+  }
+});
+
+//Ruta actualizada para editar perfil
+app.put("/update-profile", async (req, res) => {
+  if (!req.session.userId) {
+      return res.status(401).json({
+          success: false,
+          message: "No autorizado"
+      });
+  }
+
+  const { nombre, email, foto_perfil, contrasena } = req.body;
+
+  try {
+      const connection = await mysql.createConnection(dbConfig);
+
+      if (contrasena && contrasena.trim() !== "") {
+          await connection.execute(
+              "UPDATE usuarios SET nombre = ?, email = ?, foto_perfil = ?, contrasena = ? WHERE id_usuario = ?",
+              [nombre, email, foto_perfil, contrasena, req.session.userId]
+          );
+      } else {
+          await connection.execute(
+              "UPDATE usuarios SET nombre = ?, email = ?, foto_perfil = ? WHERE id_usuario = ?",
+              [nombre, email, foto_perfil, req.session.userId]
+          );
+      }
+
+      await connection.end();
+
+      res.json({
+          success: true,
+          message: "Perfil actualizado"
+      });
+
+  } catch (error) {
+      console.error(error);
+      res.status(500).json({
+          success: false,
+          message: "Error al actualizar perfil"
+      });
+  }
+});
+
+//////////////////////////////////
+//Fin
+/////////////////////////////////
+
+
+
+////////////////////////////////////////
+//Rutas para materias 
+////////////////////////////////////////
+
+// Crear materia (solo profesor)
+app.post("/crear-materia", async (req, res) => {
+  if (!req.session.userId) {
+    return res.status(401).json({
+      success: false,
+      message: "No autorizado"
+    });
+  }
+
+  const { nombre, descripcion } = req.body;
+
+  if (!nombre || nombre.trim() === "") {
+    return res.json({
+      success: false,
+      message: "El nombre es obligatorio"
+    });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    // Verificar que el usuario sea profesor
+    const [prof] = await connection.execute(
+      "SELECT rol FROM usuarios WHERE id_usuario = ?",
+      [req.session.userId]
+    );
+
+    if (prof.length === 0 || prof[0].rol !== "profesor") {
+      await connection.end();
+      return res.json({
+        success: false,
+        message: "Solo los profesores pueden crear materias"
+      });
+    }
+
+    // Insertar la materia
     await connection.execute(
       "INSERT INTO materias (nombre, descripcion, id_profesor) VALUES (?, ?, ?)",
       [nombre, descripcion, req.session.userId]
     );
+
     await connection.end();
 
-    res.json({ success: true, message: "Clase creada correctamente" });
+    res.json({
+      success: true,
+      message: "Materia creada correctamente"
+    });
+
   } catch (error) {
     console.error(error);
-    res.status(500).json({ success: false, message: "Error al crear clase" });
+    res.json({
+      success: false,
+      message: "Error al crear materia"
+    });
   }
 });
 
-// Obtener todas las clases del profesor
-app.get("/clases", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "profesor") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
-
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [clases] = await connection.execute(
-      "SELECT id_materia, nombre, descripcion FROM materias WHERE id_profesor = ?",
-      [req.session.userId]
-    );
-    await connection.end();
-
-    res.json({ success: true, clases });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al obtener clases" });
-  }
-});
-
-// Eliminar clase
-app.delete("/clases/:id", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "profesor") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
-
-  const { id } = req.params;
-
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [result] = await connection.execute(
-      "DELETE FROM materias WHERE id_materia = ? AND id_profesor = ?",
-      [id, req.session.userId]
-    );
-    await connection.end();
-
-    if (result.affectedRows === 0) {
-      return res.json({ success: false, message: "Clase no encontrada o no tienes permisos" });
-    }
-
-    res.json({ success: true, message: "Clase eliminada correctamente" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al eliminar clase" });
-  }
-});
-
-// Crear tarea
-const multer = require("multer");
-
-// Configuración de multer (solo guardando nombre original por ahora)
-const upload = multer({ dest: "uploads/" });
-
-app.post("/tareas", upload.single("archivo"), async (req, res) => {
+// Obtener materias del profesor logueado
+app.get("/materias/profesor", async (req, res) => {
   if (!req.session.userId) {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
-
-  const { id_materia, titulo, descripcion, fecha_entrega } = req.body;
-  let archivo = req.file ? req.file.filename : null;
-
-  if (!id_materia || !titulo || !fecha_entrega) {
-    return res.status(400).json({ success: false, message: "Faltan datos obligatorios" });
+    return res.status(401).json({ success: false, message: "No autenticado" });
   }
 
   try {
     const connection = await mysql.createConnection(dbConfig);
-    await connection.execute(
-      "INSERT INTO tareas (id_materia, titulo, descripcion, archivo, fecha_entrega) VALUES (?, ?, ?, ?, ?)",
-      [id_materia, titulo, descripcion || "", archivo, fecha_entrega]
-    );
-    await connection.end();
 
-    res.json({ success: true, message: "Tarea creada correctamente" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al crear la tarea" });
-  }
-});
-
-
-// Obtener tareas de una materia
-app.get("/tareas/:id_materia", async (req, res) => {
-    if (!req.session.userId) {
-        return res.status(401).json({ success: false, message: "No autorizado" });
-    }
-
-    const { id_materia } = req.params;
-
-    try {
-        const connection = await mysql.createConnection(dbConfig);
-        const [tareas] = await connection.execute(
-            "SELECT * FROM tareas WHERE id_materia = ?",
-            [id_materia]
-        );
-        await connection.end();
-
-        res.json({ success: true, tareas });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: "Error al obtener las tareas" });
-    }
-});
-
-// Eliminar tarea
-app.delete("/tareas/:id_tarea", async (req, res) => {
-    if (!req.session.userId) {
-        return res.status(401).json({ success: false, message: "No autorizado" });
-    }
-
-    const { id_tarea } = req.params;
-
-    try {
-        const connection = await mysql.createConnection(dbConfig);
-        await connection.execute("DELETE FROM tareas WHERE id_tarea = ?", [id_tarea]);
-        await connection.end();
-
-        res.json({ success: true, message: "Tarea eliminada" });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: "Error al eliminar la tarea" });
-    }
-});
-
-// Obtener tareas de todas las clases del estudiante
-app.get("/tareas-estudiante", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "estudiante") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
-
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-    const [tareas] = await connection.execute(
-      `SELECT t.id_tarea, t.titulo, t.descripcion, t.fecha_entrega, t.archivo, t.id_materia
-       FROM tareas t
-       JOIN inscripciones i ON t.id_materia = i.id_materia
-       WHERE i.id_estudiante = ?`,
+    // Verificar que sea profesor
+    const [prof] = await connection.execute(
+      "SELECT rol FROM usuarios WHERE id_usuario = ?",
       [req.session.userId]
     );
-    await connection.end();
-    res.json({ success: true, tareas });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al obtener tareas" });
-  }
-});
 
-// Obtener clases disponibles para el estudiante
-app.get("/clases-disponibles", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "estudiante") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
-  }
+    if (prof.length === 0 || prof[0].rol !== "profesor") {
+      await connection.end();
+      return res.json({
+        success: false,
+        message: "Solo los profesores pueden ver sus materias"
+      });
+    }
 
-  try {
-    const connection = await mysql.createConnection(dbConfig);
-
-    // Traer todas las clases
-    const [clases] = await connection.execute(
-      "SELECT id_materia, nombre, descripcion FROM materias"
-    );
-
-    // Traer inscripciones del estudiante
-    const [inscripciones] = await connection.execute(
-      "SELECT id_materia FROM inscripciones WHERE id_estudiante = ?",
+    // Obtener materias
+    const [materias] = await connection.execute(
+      "SELECT * FROM materias WHERE id_profesor = ?",
       [req.session.userId]
     );
 
     await connection.end();
 
-    // Solo devolver los IDs de clases donde ya está inscrito
-    const idsInscritas = inscripciones.map(i => i.id_materia);
+    return res.json({
+      success: true,
+      materias
+    });
 
-    res.json({ success: true, clases, inscripciones: idsInscritas });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al obtener clases" });
+    console.log(error);
+    return res.json({
+      success: false,
+      message: "Error en el servidor"
+    });
   }
 });
 
-app.post("/inscribirse", async (req, res) => {
-  if (!req.session.userId || req.session.rol !== "estudiante") {
-    return res.status(401).json({ success: false, message: "No autorizado" });
+// ELIMINAR MATERIA
+app.delete("/materias/eliminar/:id", async (req, res) => {
+  if (!req.session.userId) {
+      return res.status(401).json({
+          success: false,
+          message: "No autorizado"
+      });
   }
 
-  const { id_materia } = req.body;
-  if (!id_materia) {
-    return res.status(400).json({ success: false, message: "Falta id de la materia" });
+  const idMateria = req.params.id;
+
+  try {
+      const connection = await mysql.createConnection(dbConfig);
+
+      // Verificar que la materia pertenece al profesor
+      const [rows] = await connection.execute(
+          "SELECT * FROM materias WHERE id_materia = ? AND id_profesor = ?",
+          [idMateria, req.session.userId]
+      );
+
+      if (rows.length === 0) {
+          await connection.end();
+          return res.json({
+              success: false,
+              message: "No puedes eliminar esta materia"
+          });
+      }
+
+      // Eliminar
+      await connection.execute(
+          "DELETE FROM materias WHERE id_materia = ?",
+          [idMateria]
+      );
+
+      await connection.end();
+
+      res.json({
+          success: true,
+          message: "Materia eliminada correctamente"
+      });
+
+  } catch (error) {
+      console.log(error);
+      res.json({
+          success: false,
+          message: "Error al eliminar materia"
+      });
   }
+});
+
+
+////////////////////////////////////////////////////
+//Fin
+//////////////////////////////////////////////////
+
+
+
+
+///////////////////////////////////////////////////////
+//Inscribirse a materia
+////////////////////////////////////////////////////////
+
+function autenticarEstudiante(req, res, next) {
+  if (!req.session || !req.session.userId) {
+    return res.status(401).json({
+      success: false,
+      message: "No autorizado. Inicia sesión."
+    });
+  }
+
+  // Guardamos los datos del usuario en req.user
+  req.user = { id: req.session.userId };
+  next();
+}
+
+
+//Ver materias disponibles (no inscritas)
+app.get("/materias/disponibles", async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ success: false, message: "No autorizado" });
+  }
+
+  const id_estudiante = req.session.userId;
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const [materias] = await connection.execute(
+      `SELECT m.id_materia, m.nombre, m.descripcion
+       FROM materias m
+       WHERE m.id_materia NOT IN (
+         SELECT id_materia FROM inscripciones WHERE id_estudiante = ?
+       )`,
+      [id_estudiante]
+    );
+
+    await connection.end();
+    res.json({ success: true, materias });
+
+  } catch (error) {
+    console.log(error);
+    res.json({ success: false, message: "Error de servidor" });
+  }
+});
+
+
+//Ruta para que el estudiante vea sus materias inscritas
+app.post("/inscribirse/:id_materia", async (req, res) => {
+  if (!req.session.userId) {
+    return res.json({ success: false, message: "No autorizado" });
+  }
+
+  const id_estudiante = req.session.userId;
+  const id_materia = req.params.id_materia;
 
   try {
     const connection = await mysql.createConnection(dbConfig);
 
     // Verificar si ya está inscrito
-    const [existe] = await connection.execute(
+    const [exist] = await connection.execute(
       "SELECT * FROM inscripciones WHERE id_estudiante = ? AND id_materia = ?",
-      [req.session.userId, id_materia]
+      [id_estudiante, id_materia]
     );
 
-    if (existe.length > 0) {
-      await connection.end();
-      return res.json({ success: false, message: "Ya estás inscrito en esta clase" });
+    if (exist.length > 0) {
+      return res.json({
+        success: false,
+        message: "Ya estás inscrito en esta materia."
+      });
     }
 
-    // Insertar inscripción
     await connection.execute(
-      "INSERT INTO inscripciones (id_materia, id_estudiante, fecha_inscripcion) VALUES (?, ?, NOW())",
-      [id_materia, req.session.userId]
+      "INSERT INTO inscripciones (id_materia, id_estudiante, fecha_inscripcion) VALUES (?,?,NOW())",
+      [id_materia, id_estudiante]
     );
 
     await connection.end();
 
-    res.json({ success: true, message: "Inscripción realizada correctamente" });
+    res.json({ success: true, message: "Inscripción exitosa" });
+
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: "Error al inscribirse" });
+    console.log(error);
+    res.json({ success: false, message: "Error de servidor" });
+  }
+});
+
+//
+app.get("/mis-materias", autenticarEstudiante, async (req, res) => {
+  const id_estudiante = req.user.id;
+
+  const query = `
+    SELECT m.*, i.id_inscripcion
+    FROM inscripciones i
+    INNER JOIN materias m ON m.id_materia = i.id_materia
+    WHERE i.id_estudiante = ?
+  `;
+  
+  const materias = await db.query(query, [id_estudiante]);
+
+  res.json({ success: true, materias });
+});
+
+//Necesario para poder eliminar
+app.delete("/inscripciones/:id_inscripcion", autenticarEstudiante, async (req, res) => {
+  const id_inscripcion = req.params.id_inscripcion;
+
+  await db.query(
+    "DELETE FROM inscripciones WHERE id_inscripcion = ?",
+    [id_inscripcion]
+  );
+
+  res.json({ success: true, message: "Te has salido de la materia" });
+});
+
+
+
+
+/////////////////////////////////////////////////
+//Lisatado de estudiantes
+///////////////////////////////////////////////////
+
+// Middleware para autenticar profesor
+function autenticarProfesor(req, res, next) {
+  if (!req.session.userId || req.session.rol !== "profesor") {
+    return res.status(401).json({ success: false, message: "No autorizado" });
+  }
+  next();
+}
+
+
+//  Obtener estudiantes inscritos en una materia
+app.get("/profesor/materia/:id_materia/estudiantes", autenticarProfesor, async (req, res) => {
+  const id_profesor = req.session.userId;
+  const id_materia = req.params.id_materia;
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const [rows] = await connection.execute(
+      `SELECT u.id_usuario, u.nombre, u.email 
+       FROM inscripciones i
+       INNER JOIN usuarios u ON u.id_usuario = i.id_estudiante
+       INNER JOIN materias m ON m.id_materia = i.id_materia
+       WHERE m.id_materia = ? AND m.id_profesor = ?`,
+      [id_materia, id_profesor]
+    );
+
+    await connection.end();
+
+    res.json({ success: true, estudiantes: rows });
+
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: "Error en servidor" });
   }
 });
 
 
-// Listar estudiantes de un profesor
-// Listar estudiantes de un profesor
-app.get("/estudiantes", async (req, res) => {
-    try {
-      const idProfesor = req.query.idProfesor;
-      const [estudiantes] = await db.query(`
-        SELECT i.id_inscripcion, u.id_usuario, u.nombre, u.email
-        FROM usuarios u
-        JOIN inscripciones i ON u.id_usuario = i.id_estudiante
-        JOIN materias m ON i.id_materia = m.id_materia
-        WHERE m.id_profesor = ?`, [idProfesor]);
-  
-      res.json({ success: true, estudiantes });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ success: false, message: "Error al traer estudiantes" });
-    }
-  });
-  
-  
-  
-// Obtener estudiantes de una materia
-app.get("/estudiantes/:id_materia", (req, res) => {
-    const { id_materia } = req.params;
-
-    const sql = `
-        SELECT 
-            i.id_inscripcion,
-            u.id_usuario,
-            u.nombre,
-            u.email
-        FROM inscripciones i
-        INNER JOIN usuarios u ON u.id_usuario = i.id_estudiante
-        WHERE i.id_materia = ?
-    `;
-
-    db.query(sql, [id_materia], (err, result) => {
-        if (err) {
-            console.error("Error SQL:", err);
-            return res.status(500).json({ success: false, message: "Error en consulta" });
-        }
-
-        return res.json({ success: true, estudiantes: result });
-    });
-});
 
 
-// Eliminar estudiante de una clase
-app.delete("/eliminar-inscripcion/:id_inscripcion", (req, res) => {
-    const { id_inscripcion } = req.params;
+/////////////////////////////////////////////////
+//Fin
+///////////////////////////////////////////////////
 
-    const sql = `DELETE FROM inscripciones WHERE id_inscripcion = ?`;
 
-    db.query(sql, [id_inscripcion], (err, result) => {
-        if (err) {
-            console.error("Error SQL:", err);
-            return res.status(500).json({ success: false, message: "Error al eliminar" });
-        }
 
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ success: false, message: "Inscripción no encontrada" });
-        }
 
-        return res.json({ success: true, message: "Inscripción eliminada" });
-    });
-});
+
+
+
+
+
 
 //Inicializa el servidor
 app.listen(5000,()=>{
